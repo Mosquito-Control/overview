@@ -1,7 +1,7 @@
-# Integrated System State — Systems 1, 2 & 3
+# Integrated System State — Systems 1, 2, 3 & 4
 
-**Date**: 2026-06-06  
-**Status**: Full data pipeline wired and verified end-to-end
+**Date**: 2026-06-06 (System 4 + System 3 Azure deployment added)
+**Status**: Full 4-system pipeline wired, deployed, and verified end-to-end
 
 ---
 
@@ -24,25 +24,43 @@ Unity RTSP / Physical Camera
 └────────┬────────────┘
          │  INSERT positions (psycopg2)
          ▼
-┌─────────────────────┐
-│   Azure PostgreSQL  │  drone-detection-pg.postgres.database.azure.com
-│   dronedetection    │  table: positions
-└────────┬────────────┘
-         │  SELECT (pg pool, poll every 1.5s)
-         ▼
-┌─────────────────────┐
-│     System 3        │  Tion-ping/system3-operator-dashboard
-│ Operator Dashboard  │  Next.js 16 · MapLibre · Zustand
-│                     │  + synthetic SIM-001/002/003 overlay
-│                     │  + zone-violation alert engine
-└─────────────────────┘
+┌────────────────────────────────────────────┐
+│              Azure PostgreSQL              │
+│  drone-detection-pg.postgres.database…     │
+│  tables: positions · tracks · track_points │
+└──────────┬────────────────────┬────────────┘
+           │ SELECT positions   │ SELECT tracks + track_points
+           │ (poll every 1s)    │ (poll every 1.5s via /api/tracks)
+           ▼                    │
+┌─────────────────────┐         │
+│     System 4        │         │
+│  Tracking Engine    │         │
+│  Python · FastAPI   │         │
+│  Azure Container    │         │
+│  Apps               │         │
+│  50m/3s assoc ·     │         │
+│  lost after 10s     │         │
+└──────────┬──────────┘         │
+           │ INSERT/UPDATE      │
+           │ tracks,            │
+           │ track_points       │
+           └────────────────────┤
+                                ▼
+                    ┌─────────────────────┐
+                    │     System 3        │  Tion-ping/system3-operator-dashboard
+                    │ Operator Dashboard  │  Next.js 16 · MapLibre · Zustand
+                    │  Azure Container    │  raw detection dots
+                    │  Apps               │  polyline track trails + colored dots
+                    │                     │  SIM-001/002/003 synthetic overlay
+                    │                     │  zone-violation alert engine
+                    └─────────────────────┘
 ```
 
 ---
 
 ## System 1 — Detection Agent
 
-**Repo**: `https://github.com/Tion-ping/system1-detection-agent`  
+**Repo**: `https://github.com/Tion-ping/system1-detection-agent`
 **Status**: Implemented, tested with mock System 2
 
 ### What it does
@@ -92,7 +110,7 @@ cameras:
 }
 ```
 
-**bearing_vector** is a 3D ENU (East-North-Up) unit vector derived from:
+**bearing_vector** is a 3D ENU (East-North-Up) unit vector:
 ```
 E = cos(φ) * sin(α)   N = cos(φ) * cos(α)   U = sin(φ)
 ```
@@ -104,24 +122,22 @@ where α = azimuth (°, clockwise from north) and φ = elevation (°, above hori
 cd system1-detection-agent
 pip install -r requirements.txt
 python -m system1.main          # real RTSP mode
-# E2E test (no Unity needed):
-python tests/e2e/run_e2e.py
+python tests/e2e/run_e2e.py     # E2E test (no Unity needed)
 ```
 
 ---
 
 ## System 2 — Positioning Engine
 
-**Repo**: `https://github.com/Tion-ping/system2-positioning-engine`  
-**Live API**: `https://system2-api.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`  
+**Repo**: `https://github.com/Tion-ping/system2-positioning-engine`
+**Live API**: `https://system2-api.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`
 **Status**: Deployed on Azure Container Apps, verified
 
 ### What it does
 - Receives `POST /events` from System 1 cameras
 - Buffers detections in a per-camera ring cache (300 events max)
-- Every 500ms: attempts triangulation for all camera pairs in the cache
-  using skew-line midpoint method in ENU coordinates
-- Accepts intersections only within 500m of each camera (configurable)
+- Every 500ms: attempts triangulation for all camera pairs using skew-line midpoint in ENU
+- Accepts intersections only within 500m of each camera
 - Converts accepted ENU intersection to WGS84 (lat/lon/alt)
 - Upserts to `positions` table; also flushes raw camera events to DB every 5s
 
@@ -140,8 +156,10 @@ python tests/e2e/run_e2e.py
 | Container Registry | `dronedetectionacr` | westeurope |
 | Container Apps environment | `drone-detection-env` | westeurope |
 | Container App | `system2-api` | westeurope |
+| Container App | `system3-dashboard` | westeurope |
+| Container App | `system4-tracking` | westeurope |
 
-### Runtime config (env vars on container app)
+### Runtime config
 
 | Var | Value | Meaning |
 |---|---|---|
@@ -151,81 +169,124 @@ python tests/e2e/run_e2e.py
 | `LOOP_INTERVAL_S` | 0.5 | Triangulation loop cadence |
 | `DB_FLUSH_INTERVAL_S` | 5.0 | How often raw events flush to DB |
 
-### Camera config (`cameras.yaml` — same IDs as System 1)
-
-```yaml
-reference_origin:
-  lat: 22.3193
-  lon: 114.1694
-  alt_m: 0.0
-
-cameras:
-  - id: cam_01
-    lat: 22.3193
-    lon: 114.1694
-    alt_m: 15.0
-  - id: cam_02
-    lat: 22.3210    # ~190m north of cam_01
-    lon: 114.1694
-    alt_m: 15.0
-```
-
-### `positions` table schema (read by System 3)
+### `positions` table schema
 
 ```sql
 SELECT id, timestamp, lat, lon, alt_m, cam_pair, score_i, score_j, inserted_at
-FROM positions
-ORDER BY inserted_at DESC;
+FROM positions ORDER BY inserted_at DESC;
 ```
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | SERIAL | Auto-increment |
 | `timestamp` | TIMESTAMPTZ | UTC time of source detections |
-| `lat` | DOUBLE PRECISION | WGS84 |
-| `lon` | DOUBLE PRECISION | WGS84 |
+| `lat` / `lon` | DOUBLE PRECISION | WGS84 |
 | `alt_m` | DOUBLE PRECISION | Metres above sea level |
 | `cam_pair` | TEXT | e.g. `cam_01+cam_02` |
 | `score_i/j` | DOUBLE PRECISION | ML detection confidence |
 | `inserted_at` | TIMESTAMPTZ | Server write time |
 
-### Database access
-
-| Role | Password | Access |
-|---|---|---|
-| `droneadmin` | (ask Filipp — in container env) | Full admin |
-| `system3_reader` | `system3reader` (default from `READER_PASSWORD` env) | SELECT on `positions` only |
-
 ### Local dev
 
 ```bash
 cd system2-positioning-engine
-docker-compose up          # starts FastAPI on :8000 + Postgres on :5432
+docker-compose up    # FastAPI on :8000 + Postgres on :5432
+```
+
+---
+
+## System 4 — Tracking Engine
+
+**Repo**: `https://github.com/Tion-ping/system4-tracking-engine`
+**Live API**: `https://system4-tracking.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`
+**Status**: Deployed on Azure Container Apps, DB connected, tracker loop running
+
+### What it does
+- Polls `positions` table every 1s since its last cursor (`inserted_at` watermark)
+- Greedy nearest-neighbour association per new detection:
+  - Finds all active tracks with `last_seen` within `ASSOC_TIME_S`
+  - Picks the nearest if within `ASSOC_DIST_M`; otherwise starts a new track
+- Updates `tracks.last_lat/lon/alt_m/last_seen/point_count` on match
+- Inserts one `track_points` row per detection, linking it to `positions.id`
+- Marks tracks with `last_seen < NOW() - LOST_AFTER_S` as `lost`
+
+### Live endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | `{status, activeTracks, dbOk}` |
+| `GET /tracks?window_m=5&trail_points=50` | All tracks active in last N minutes, with trail |
+| `GET /tracks/{id}?trail_points=200` | Single track with full history |
+
+### DB tables (migration: `migrations/001_create_tracks.sql`)
+
+**`tracks`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL | Auto-increment track ID |
+| `first_seen` | TIMESTAMPTZ | Timestamp of first linked detection |
+| `last_seen` | TIMESTAMPTZ | Timestamp of most recent linked detection |
+| `last_lat/lon/alt_m` | DOUBLE PRECISION | WGS84 position of last point |
+| `point_count` | INTEGER | Total detections linked |
+| `status` | TEXT | `active` or `lost` |
+
+**`track_points`**
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL | |
+| `track_id` | INTEGER | FK → `tracks.id` |
+| `position_id` | INTEGER | FK → `positions.id` |
+| `timestamp` | TIMESTAMPTZ | Detection time |
+| `lat/lon/alt_m` | DOUBLE PRECISION | WGS84 |
+| `inserted_at` | TIMESTAMPTZ | Server write time |
+
+### Runtime config
+
+| Var | Value | Meaning |
+|---|---|---|
+| `DATABASE_URL` | droneadmin @ drone-detection-pg | Full read+write |
+| `ASSOC_DIST_M` | 50 | Max metres to associate to existing track |
+| `ASSOC_TIME_S` | 3.0 | Max seconds since track's last point |
+| `LOST_AFTER_S` | 10.0 | Idle seconds before marking track lost |
+| `LOOP_INTERVAL_S` | 1.0 | Tracker poll cadence |
+
+### Local dev
+
+```bash
+cd system4-tracking-engine
+cp .env.example .env    # fill in droneadmin DATABASE_URL
+pip install -r requirements.txt
+uvicorn system4.main:app --reload --port 8001
 ```
 
 ---
 
 ## System 3 — Operator Dashboard
 
-**Repo**: `https://github.com/Tion-ping/system3-operator-dashboard`  
-**Status**: Implemented, connected to Azure PostgreSQL, build green
+**Repo**: `https://github.com/Tion-ping/system3-operator-dashboard`
+**Live URL**: `https://system3-dashboard.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`
+**Status**: Deployed on Azure Container Apps, connected to Azure PostgreSQL
 
 ### What it does
-- Polls `positions` table every 1.5s via a server-side Next.js route
-- Displays live drone positions as dots on a MapLibre map
-- Runs synthetic background traffic (SIM-001/002/003) in continuous loops
-- Zone-violation alert engine fires on entry into drawn or HK static no-fly zones
+- Polls `positions` table every 1.5s (`/api/positions`) — raw detection dots on map
+- Polls `tracks` + `track_points` every 1.5s (`/api/tracks`) — polyline trail + colored dot per track
+- Runs synthetic background traffic (SIM-001/002/003) always on for demo continuity
+- Zone-violation alert engine fires on entry for all drone IDs (raw, tracked, synthetic)
 - Operator can draw/edit/save restricted zones on the map
 - Alerts panel lists all violations with severity and drone ID
 
 ### Data streams
 
-| Stream | Hook | IDs | Always on? |
+| Stream | Hook | ID format | Always on? |
 |---|---|---|---|
 | Real detections | `usePositions` | `cam_01+cam_02#<row_id>` | Yes |
+| System 4 tracks | `useTracks` | `t-<track_id>` | Yes (degrades silently if unavailable) |
 | Synthetic background | `useDroneStream` | `SIM-001`, `SIM-002`, `SIM-003` | Yes |
 
-Both feed into the same Zustand `drones` store and through the same alert engine.
+All three feed into the same Zustand `drones` store and through the same alert engine.
+`useTracks` additionally writes to a separate `tracks` store slice for the polyline layer.
 
 ### Alert engine (`use-alert-engine.ts`)
 
@@ -234,11 +295,9 @@ Subscribes to `drones` store. On each update:
 2. Runs same check against every enabled HK static no-fly zone
 3. Fires `pushAlert` on zone **entry only** (re-entry after exit fires again)
 
-Severity:
-- `high` — military / airport / vip drawn zones, or any HK static no-fly zone
-- `medium` — event / country-park / custom drawn zones
+Severity: `high` — military / airport / vip / any HK static zone · `medium` — event / country-park / custom
 
-### Required `.env.local` (not committed)
+### Required `.env.local` (local dev only — not committed)
 
 ```
 DATABASE_URL=postgresql://system3_reader:system3reader@drone-detection-pg.postgres.database.azure.com/dronedetection?sslmode=require
@@ -246,53 +305,77 @@ NEXT_PUBLIC_POSITIONS_POLL_MS=1500
 POSITIONS_LIMIT=200
 ```
 
-### Running
+### Running locally
 
 ```bash
 cd system3-operator-dashboard
 npm install
-cp .env.example .env.local   # then fill in DATABASE_URL above
-npm run dev                  # dashboard on http://localhost:3000
-npm run probe                # verifies System 2 API + DB + /api/positions route
+cp .env.example .env.local   # fill in DATABASE_URL above
+npm run dev                   # dashboard on http://localhost:3000
+npm run probe                 # verifies System 2 API + DB + /api/positions route
 ```
 
 ### Key source files
 
 ```
 src/
-├── app/
-│   └── api/positions/route.ts     # server route, SELECTs from positions table
+├── app/api/
+│   ├── positions/route.ts     # SELECTs from positions table
+│   └── tracks/route.ts        # SELECTs from tracks + track_points tables
 ├── components/
-│   ├── dashboard.tsx              # mounts all three hooks
-│   ├── alerts-layer.tsx           # renders alert dots on map
-│   ├── map-canvas.tsx             # zone draw/edit, point-in-polygon for clicks
-│   └── hk-no-fly-layer.tsx        # HK static no-fly zone rendering
+│   ├── dashboard.tsx          # mounts all four hooks
+│   ├── tracks-layer.tsx       # polyline trail + colored dot per track
+│   ├── alerts-layer.tsx       # alert dots on map
+│   ├── map-canvas.tsx         # zone draw/edit, point-in-polygon for clicks
+│   └── hk-no-fly-layer.tsx    # HK static no-fly zone rendering
 └── lib/
-    ├── use-positions.ts           # real DB poll hook
-    ├── use-drone-stream.ts        # synthetic SIM-* stream
-    ├── use-alert-engine.ts        # zone-violation alert engine
-    ├── pg-pool.ts                 # postgres connection pool (server-only)
-    ├── store.ts                   # Zustand store (drones, zones, alerts)
-    └── types.ts                   # DroneFix, Alert, ZoneFeature types
+    ├── use-positions.ts       # raw DB poll hook
+    ├── use-tracks.ts          # System 4 track poll hook
+    ├── use-drone-stream.ts    # synthetic SIM-* stream
+    ├── use-alert-engine.ts    # zone-violation alert engine
+    ├── pg-pool.ts             # postgres connection pool (server-only)
+    ├── store.ts               # Zustand store (drones, zones, alerts, tracks)
+    └── types.ts               # DroneFix, Alert, Track, TrackPoint, ZoneFeature
 ```
+
+---
+
+## Database Access
+
+Server: `drone-detection-pg.postgres.database.azure.com` / DB: `dronedetection`
+
+| Role | Password | Tables accessible |
+|---|---|---|
+| `droneadmin` | in System 2 + System 4 container env | Full admin on all tables |
+| `system3_reader` | `system3reader` | SELECT on `positions`, `tracks`, `track_points` |
 
 ---
 
 ## Integration Verification Checklist
 
-- [x] System 1 E2E test passes (bearing vectors unit, cam_id correct, POSTs reach System 2)
-- [x] System 2 deployed on Azure, `/health` returns 200
-- [x] `system3_reader` connects to Azure PostgreSQL — 7 positions in table as of 2026-06-06
-- [x] System 3 build green (0 TS errors)
-- [x] Both data streams mount on dashboard load
-- [x] Alert engine fires on zone entry for both SIM and real drone IDs
+- [x] System 1 E2E test passes (bearing vectors, cam_id, POSTs reach System 2)
+- [x] System 2 deployed — `/health` returns `{"status":"ok","cache_size":0}`
+- [x] DB migration run — `tracks` + `track_points` tables exist, `system3_reader` SELECT grants applied
+- [x] System 4 deployed — `/health` returns `{"status":"ok","activeTracks":0,"dbOk":true}`
+- [x] System 4 `/tracks` returns `{"tracks":[],"asOf":"..."}` (empty until System 1 streams)
+- [x] System 3 deployed — dashboard root returns 200
+- [x] System 3 `/api/tracks` returns `{"tracks":[],"degraded":false}`
+- [x] System 3 TypeScript build green (0 errors)
+- [x] Track polyline trail + colored dot layers present in map component tree
+- [x] Alert engine wired to `t-<id>` drone IDs from `useTracks`
+- [x] All four repos pushed to `github.com/Tion-ping/`
+
+---
 
 ## Known Risks / Gotchas
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | System 1 clock drift >0.5s from NTP | Events fall outside System 2 time window, silently dropped | Ensure NTP on all System 1 hosts |
-| `cam_id` mismatch between System 1 `cameras.yaml` and System 2 `cameras.yaml` | Events silently dropped | Both currently have `cam_01`, `cam_02` — keep in sync |
+| `cam_id` mismatch between System 1 and System 2 `cameras.yaml` | Events silently dropped | Both have `cam_01`, `cam_02` — keep in sync |
 | Bearing vector in wrong coordinate frame | Wrong positions, no error | ENU frame required: E=cos(φ)sin(α), N=cos(φ)cos(α), U=sin(φ) |
-| `system3_reader` default password | Low security | Acceptable for hackathon demo; rotate before any production use |
-| `positions` schema changes | System 3 query breaks | Coordinate with System 3 before any column renames/drops |
+| `ASSOC_DIST_M` too tight for fast-moving drones | Detections create new tracks instead of extending existing ones | Tune upward if drone speed > ~17 m/s (50m / 3s) |
+| `ASSOC_TIME_S` too loose with multiple drones | Wrong drone gets a detection linked to it | Reduce if tracks are being mis-merged |
+| `system3_reader` default password | Low security | Acceptable for hackathon; rotate before production |
+| `positions` or `tracks` schema changes | Downstream queries break silently | Coordinate across all four systems before column changes |
+| System 3 `NEXT_PUBLIC_*` vars baked at build time | Changing poll interval requires image rebuild + redeploy | Rebuild from `system3-operator-dashboard/` Dockerfile |
