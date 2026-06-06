@@ -16,33 +16,10 @@ System 2
 - system 2 then upserts the positions in to a position table with the timestamp of detection
 
 
-- `MAP`
-- `[DW?] sequence of poi`
-- `- map with restricted areas`
-- `-> mark target`
-- `-> UI, dashboard`
-- `-> user interaction for`
-- `designation of area`
-:w
-sd
-Right side:
+System 3
+- polls detected positions from DB
+- containes map with restricted areas
+- if a detected position is inside a restricted area -> mark target and assign id -> upsert to DB
+- display in UI, dashboard
+- enable user interaction for designation of areas
 
-- `Y SIH` or similar unclear shorthand
-
-## What it seems to be about
-
-These notes appear to be brainstorming for a mapping / vision / tracking system. Topics mentioned include:
-
-- machine learning / object detection
-- output streams
-- angle vectors to a drone
-- bounding boxes
-- caching and processing
-- triangulation / position estimation
-- map UI / dashboard work
-- marking targets and restricted areas
-- user interaction for defining areas
-
-## Confidence
-
-Several words are unclear because the handwriting is faint. The transcription above is a best effort and may need manual correction.
