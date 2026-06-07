@@ -5,6 +5,44 @@
 
 ---
 
+## Executive Summary
+
+This is a real-time drone airspace monitoring system designed for a Hong Kong deployment context. It ingests video from multiple fixed cameras, detects drones using ML, triangulates their GPS position, tracks them over time, and displays everything on an operator dashboard that enforces configurable no-fly zones.
+
+### What it does end-to-end
+
+1. **Detect** — Fixed cameras stream RTSP video. A YOLO model runs on each frame and converts bounding-box detections into 3D bearing vectors (ENU coordinate frame).
+2. **Localise** — A positioning engine collects bearing vectors from all cameras and triangulates the drone's WGS84 GPS position by finding the midpoint of the closest-approach line between paired bearing rays. No depth model is needed — camera geometry alone yields the 3D position.
+3. **Track** — A tracking engine reads the raw position stream and runs greedy nearest-neighbour association to stitch detections into persistent tracks. Each track accumulates a trail of timestamped `track_points`.
+4. **Display & alert** — A browser dashboard polls positions and tracks, renders them on a MapLibre map of Hong Kong, and fires zone-violation alerts whenever any drone (real, tracked, or synthetic) crosses an operator-defined or static no-fly zone boundary.
+
+### System boundaries
+
+| System | Role | Runtime |
+|---|---|---|
+| **System 1** — Detection Agent | Per-camera YOLO inference + bearing vector POST | Python process on camera host |
+| **System 2** — Positioning Engine | Multi-camera triangulation → `positions` DB table | FastAPI on Azure Container Apps |
+| **System 3** — Operator Dashboard | Map UI · zone alerts · track polylines | Next.js on Azure Container Apps |
+| **System 4** — Tracking Engine | Greedy track association → `tracks` / `track_points` tables | FastAPI on Azure Container Apps |
+
+### Shared data store
+
+All systems communicate through a single **Azure PostgreSQL** instance (`dronedetection` DB, `drone-detection-pg.postgres.database.azure.com`). System 2 writes raw positions; System 4 reads positions and writes tracks; System 3 reads both. There is no direct API coupling between System 4 and System 3 — the database is the integration boundary.
+
+### Key design decisions
+
+- **Triangulation over monocular depth**: bearing-vector intersection gives sub-metre GPS accuracy across the camera overlap zone without any depth model.
+- **ENU coordinate frame**: all bearing vectors use East-North-Up so azimuth/elevation angles from any camera orientation compose correctly before converting to WGS84.
+- **Greedy track association**: nearest-neighbour within 50 m / 3 s is simple, fast, and sufficient for low-drone-count deployments; tunable via env vars.
+- **Synthetic background traffic**: SIM-001/002/003 drones are always running in the dashboard so the alert engine and zone logic are always demonstrable without a live camera feed.
+- **Degraded-mode resilience**: System 3 degrades silently if System 4 is unavailable — raw detection dots still appear; track polylines simply disappear.
+
+### Deployment
+
+All server-side components run as Docker containers on **Azure Container Apps** (westeurope). The PostgreSQL server is in northeurope. All four repositories live under the `github.com/Tion-ping/` org.
+
+---
+
 ## Architecture Overview
 
 ```
@@ -168,6 +206,27 @@ python tests/e2e/run_e2e.py     # E2E test (no Unity needed)
 | `CACHE_SIZE` | 300 | Max events in ring buffer across all cameras |
 | `LOOP_INTERVAL_S` | 0.5 | Triangulation loop cadence |
 | `DB_FLUSH_INTERVAL_S` | 5.0 | How often raw events flush to DB |
+
+### Camera configuration (`cameras.yaml` in repo)
+
+```yaml
+reference_origin:
+  lat: 22.3193
+  lon: 114.1694
+  alt_m: 0.0
+
+cameras:
+  - id: cam_01
+    lat: 22.3193
+    lon: 114.1694
+    alt_m: 15.0
+  - id: cam_02
+    lat: 22.3210    # ~190m north of cam_01
+    lon: 114.1694
+    alt_m: 15.0
+```
+
+To add cameras: add entries here and redeploy — no code changes needed.
 
 ### `positions` table schema
 
