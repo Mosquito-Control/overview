@@ -1,13 +1,13 @@
-# Integrated System State — Systems 1, 2, 3 & 4
+# Sky Observations (SkyObs) — Integrated System State (Systems 1–5)
 
-**Date**: 2026-06-06 (System 4 + System 3 Azure deployment added)
-**Status**: Full 4-system pipeline wired, deployed, and verified end-to-end
+**Date**: 2026-06-07 (System 5 Unity simulator documented)
+**Status**: Full 5-system pipeline wired, deployed, and verified end-to-end
 
 ---
 
 ## Executive Summary
 
-This is a real-time drone airspace monitoring system designed for a Hong Kong deployment context. It ingests video from multiple fixed cameras, detects drones using ML, triangulates their GPS position, tracks them over time, and displays everything on an operator dashboard that enforces configurable no-fly zones.
+**Sky Observations (SkyObs)** is a real-time drone airspace monitoring system designed for a Hong Kong deployment context. It ingests video from multiple fixed cameras, detects drones using ML, triangulates their GPS position, tracks them over time, and displays everything on an operator dashboard that enforces configurable no-fly zones.
 
 ### What it does end-to-end
 
@@ -20,6 +20,7 @@ This is a real-time drone airspace monitoring system designed for a Hong Kong de
 
 | System | Role | Runtime |
 |---|---|---|
+| **System 5** — Unity Simulator | Virtual drone scene + mediamtx RTSP server | Unity on local workstation |
 | **System 1** — Detection Agent | Per-camera YOLO inference + bearing vector POST | Python process on camera host |
 | **System 2** — Positioning Engine | Multi-camera triangulation → `positions` DB table | FastAPI on Azure Container Apps |
 | **System 3** — Operator Dashboard | Map UI · zone alerts · track polylines | Next.js on Azure Container Apps |
@@ -39,24 +40,28 @@ All systems communicate through a single **Azure PostgreSQL** instance (`dronede
 
 ### Deployment
 
-All server-side components run as Docker containers on **Azure Container Apps** (westeurope). The PostgreSQL server is in northeurope. All four repositories live under the `github.com/Tion-ping/` org.
+All server-side components run as Docker containers on **Azure Container Apps** (westeurope). The PostgreSQL server is in northeurope. System 5 (Unity simulator) runs locally on the developer workstation and is not deployed to Azure. All five repositories live under the `github.com/Mosquito-Control/` org.
 
 ---
 
 ## Architecture Overview
 
 ```
-Unity RTSP / Physical Camera
-        │  RTSP stream
-        ▼
 ┌─────────────────────┐
-│     System 1        │  Tion-ping/system1-detection-agent
+│     System 5        │  Mosquito-Control/system5-unity-simulation
+│  Unity Simulator    │  Unity · mediamtx RTSP server
+│  (or physical cam)  │  2 virtual cameras · drone actor
+└────────┬────────────┘
+         │  RTSP streams (rtsp://localhost:8554/cam0, /cam1)
+         ▼
+┌─────────────────────┐
+│     System 1        │  Mosquito-Control/system1-detection-agent
 │  Detection Agent    │  Python · YOLO · per-camera threads
 └────────┬────────────┘
          │  POST /events  (HTTP, JSON)
          ▼
 ┌─────────────────────┐
-│     System 2        │  Tion-ping/system2-positioning-engine
+│     System 2        │  Mosquito-Control/system2-positioning-engine
 │  Positioning Engine │  FastAPI · Azure Container Apps
 │                     │  triangulation loop every 500ms
 └────────┬────────────┘
@@ -85,7 +90,7 @@ Unity RTSP / Physical Camera
            └────────────────────┤
                                 ▼
                     ┌─────────────────────┐
-                    │     System 3        │  Tion-ping/system3-operator-dashboard
+                    │     System 3        │  Mosquito-Control/system3-operator-dashboard
                     │ Operator Dashboard  │  Next.js 16 · MapLibre · Zustand
                     │  Azure Container    │  raw detection dots
                     │  Apps               │  polyline track trails + colored dots
@@ -96,9 +101,62 @@ Unity RTSP / Physical Camera
 
 ---
 
+## System 5 — Unity Simulator
+
+**Repo**: `https://github.com/Mosquito-Control/system5-unity-simulation`
+**Status**: Local development tool — not deployed to Azure
+
+### What it does
+
+System 5 is the simulation substitute for physical cameras. It runs a Unity scene containing a drone actor and two fixed virtual cameras, then streams the camera feeds over RTSP via **mediamtx** so that System 1 can consume them without modification.
+
+In production, System 5 is replaced entirely by physical cameras serving real RTSP streams. System 1 has no awareness of whether its upstream source is simulated or physical — the RTSP URL is the only coupling point.
+
+### How it works
+
+1. **Unity scene** — a virtual environment models the Hong Kong area with two fixed cameras placed at known GPS coordinates and orientations (matching `cameras.yaml` in System 2).
+2. **Drone actor** — a controllable drone flies through the scene. Ground-truth position can be logged for triangulation validation.
+3. **mediamtx** — bundled RTSP media server re-publishes the Unity camera render textures as RTSP streams. Each camera maps to one stream path.
+4. **System 1 connects** to `rtsp://localhost:8554/cam0` and `rtsp://localhost:8554/cam1` exactly as it would to physical cameras.
+
+### RTSP stream mapping
+
+| mediamtx path | Unity camera | System 1 `cam_id` |
+|---|---|---|
+| `/cam0` | Camera 1 (south-facing) | `cam_01` |
+| `/cam1` | Camera 2 (north-facing, ~190 m north) | `cam_02` |
+
+### Virtual camera configuration
+
+The Unity cameras are placed to match the reference origin and positions defined in System 2's `cameras.yaml`:
+
+| Camera | Lat | Lon | Alt | Azimuth | Elevation | HFOV |
+|---|---|---|---|---|---|---|
+| cam_01 | 22.3193 | 114.1694 | 15 m | 0° | −15° | 90° |
+| cam_02 | 22.3210 | 114.1694 | 15 m | 90° | −15° | 90° |
+
+### Running
+
+```bash
+# Start mediamtx (bundled or standalone)
+./mediamtx mediamtx.yml
+
+# Open the Unity project and enter Play mode — streams begin automatically.
+# System 1 can now connect as usual:
+python -m system1.main
+```
+
+### Key design decisions
+
+- **Drop-in replacement**: System 1's `cameras.yaml` uses the same URLs (`rtsp://localhost:8554/cam0`) for both simulator and physical cameras — no code changes needed when switching.
+- **Matching geometry**: the virtual camera placement exactly mirrors the real-world positions in System 2's `cameras.yaml`, so triangulation validation results transfer directly to the physical deployment.
+- **mediamtx over Unity native RTSP**: mediamtx gives stable, well-tested RTSP output and decouples the Unity render loop from the streaming protocol, avoiding frame-sync issues.
+
+---
+
 ## System 1 — Detection Agent
 
-**Repo**: `https://github.com/Tion-ping/system1-detection-agent`
+**Repo**: `https://github.com/Mosquito-Control/system1-detection-agent`
 **Status**: Implemented, tested with mock System 2
 
 ### What it does
@@ -167,7 +225,7 @@ python tests/e2e/run_e2e.py     # E2E test (no Unity needed)
 
 ## System 2 — Positioning Engine
 
-**Repo**: `https://github.com/Tion-ping/system2-positioning-engine`
+**Repo**: `https://github.com/Mosquito-Control/system2-positioning-engine`
 **Live API**: `https://system2-api.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`
 **Status**: Deployed on Azure Container Apps, verified
 
@@ -256,7 +314,7 @@ docker-compose up    # FastAPI on :8000 + Postgres on :5432
 
 ## System 4 — Tracking Engine
 
-**Repo**: `https://github.com/Tion-ping/system4-tracking-engine`
+**Repo**: `https://github.com/Mosquito-Control/system4-tracking-engine`
 **Live API**: `https://system4-tracking.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`
 **Status**: Deployed on Azure Container Apps, DB connected, tracker loop running
 
@@ -324,7 +382,7 @@ uvicorn system4.main:app --reload --port 8001
 
 ## System 3 — Operator Dashboard
 
-**Repo**: `https://github.com/Tion-ping/system3-operator-dashboard`
+**Repo**: `https://github.com/Mosquito-Control/system3-operator-dashboard`
 **Live URL**: `https://system3-dashboard.agreeablesea-31719cb5.westeurope.azurecontainerapps.io`
 **Status**: Deployed on Azure Container Apps, connected to Azure PostgreSQL
 
@@ -412,6 +470,7 @@ Server: `drone-detection-pg.postgres.database.azure.com` / DB: `dronedetection`
 
 ## Integration Verification Checklist
 
+- [x] System 5 streams available — mediamtx serving `rtsp://localhost:8554/cam0` and `/cam1`
 - [x] System 1 E2E test passes (bearing vectors, cam_id, POSTs reach System 2)
 - [x] System 2 deployed — `/health` returns `{"status":"ok","cache_size":0}`
 - [x] DB migration run — `tracks` + `track_points` tables exist, `system3_reader` SELECT grants applied
@@ -422,7 +481,7 @@ Server: `drone-detection-pg.postgres.database.azure.com` / DB: `dronedetection`
 - [x] System 3 TypeScript build green (0 errors)
 - [x] Track polyline trail + colored dot layers present in map component tree
 - [x] Alert engine wired to `t-<id>` drone IDs from `useTracks`
-- [x] All four repos pushed to `github.com/Tion-ping/`
+- [x] All five repos pushed to `github.com/Mosquito-Control/`
 
 ---
 
@@ -430,6 +489,8 @@ Server: `drone-detection-pg.postgres.database.azure.com` / DB: `dronedetection`
 
 | Risk | Impact | Mitigation |
 |---|---|---|
+| System 5 camera geometry differs from `cameras.yaml` | Triangulated positions are off even with correct detections | Keep Unity camera placement exactly in sync with System 2 `cameras.yaml` |
+| mediamtx frame drops under load | System 1 misses frames, detection rate drops | Keep Unity running at stable frame rate; mediamtx is low overhead |
 | System 1 clock drift >0.5s from NTP | Events fall outside System 2 time window, silently dropped | Ensure NTP on all System 1 hosts |
 | `cam_id` mismatch between System 1 and System 2 `cameras.yaml` | Events silently dropped | Both have `cam_01`, `cam_02` — keep in sync |
 | Bearing vector in wrong coordinate frame | Wrong positions, no error | ENU frame required: E=cos(φ)sin(α), N=cos(φ)cos(α), U=sin(φ) |

@@ -1,4 +1,4 @@
-# Mosquito Control — Project Overview
+# Sky Observations (SkyObs) — Project Overview
 
 Real-time drone airspace monitoring system. Detects drones via fixed cameras, triangulates their GPS position, tracks them over time, and alerts operators when drones enter restricted zones.
 
@@ -7,7 +7,7 @@ Real-time drone airspace monitoring system. Detects drones via fixed cameras, tr
 ## How it works
 
 ```
-Fixed cameras (RTSP)
+System 5: Unity simulator → mediamtx RTSP server (or physical cameras)
   → System 1: YOLO detection → bearing vectors
   → System 2: multi-camera triangulation → GPS positions → PostgreSQL
   → System 4: greedy track association → persistent tracks → PostgreSQL
@@ -16,16 +16,34 @@ Fixed cameras (RTSP)
 
 All server components run on **Azure Container Apps**. Systems 2, 3, and 4 share a single **Azure PostgreSQL** instance as their integration boundary — no direct API coupling between systems.
 
+System 5 (Unity simulator) runs locally and is the simulation substitute for physical cameras during development and demo.
+
+---
+
+## Detection model
+
+Three options, all YOLOv8/11 family, all output pixel bounding boxes that `drone-detection-ml` converts to ENU bearing vectors:
+
+| Model | Source | mAP@0.5 | Notes |
+|---|---|---|---|
+| **YOLOv8n** (baseline) | bundled in repo | — | Fastest; misses small/distant drones; conf 0.37–0.84 on test set |
+| **YOLOv11x** (public fine-tune) | public HuggingFace checkpoint pre-trained on drone data | — | Starting point for our fine-tune; not our weights |
+| **YOLOv11x** (our fine-tune, recommended) | [`FilippTrigub/yolov11x-drone-finetuned`](https://huggingface.co/FilippTrigub/yolov11x-drone-finetuned) | 0.555 | Trained on 17,351 images (Zhejiang Uni + DetFly); precision 0.775, recall 0.606 |
+
+Full model cards, benchmarks, and usage: [`drone-detection-ml/`](../drone-detection-ml/README.md).
+
 ---
 
 ## Repositories
 
 | Repo | Role |
 |---|---|
-| [system1-detection-agent](https://github.com/Tion-ping/system1-detection-agent) | Per-camera YOLO inference · bearing vector POST to System 2 |
-| [system2-positioning-engine](https://github.com/Tion-ping/system2-positioning-engine) | Ray triangulation · writes `positions` table |
-| [system3-operator-dashboard](https://github.com/Tion-ping/system3-operator-dashboard) | Next.js map UI · zone alerts · track polylines |
-| [system4-tracking-engine](https://github.com/Tion-ping/system4-tracking-engine) | Track association · writes `tracks` + `track_points` tables |
+| [system5-unity-simulation](https://github.com/Mosquito-Control/system5-unity-simulation) | Unity drone scene · mediamtx RTSP server · virtual cameras |
+| [drone-detection-ml](https://github.com/Mosquito-Control/drone-detection-ml) | YOLO inference library · pixel bbox → ENU bearing vector |
+| [system1-detection-agent](https://github.com/Mosquito-Control/system1-detection-agent) | Per-camera YOLO inference · bearing vector POST to System 2 |
+| [system2-positioning-engine](https://github.com/Mosquito-Control/system2-positioning-engine) | Ray triangulation · writes `positions` table |
+| [system3-operator-dashboard](https://github.com/Mosquito-Control/system3-operator-dashboard) | Next.js map UI · zone alerts · track polylines |
+| [system4-tracking-engine](https://github.com/Mosquito-Control/system4-tracking-engine) | Track association · writes `tracks` + `track_points` tables |
 
 ---
 
@@ -47,3 +65,7 @@ All server components run on **Azure Container Apps**. Systems 2, 3, and 4 share
 | [RESEARCH.md](./RESEARCH.md) | ML model selection, detection/positioning approach, sprint plan |
 | [DATASETS.md](./DATASETS.md) | Drone detection datasets ranked by relevance |
 | [OS_COMPATIBILITY.md](./OS_COMPATIBILITY.md) | Simulator stack compatibility on Arch/CachyOS |
+
+---
+
+*Project name: **Sky Observations** · short: **SkyObs***
