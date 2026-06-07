@@ -11,9 +11,10 @@ Judges compare this against `git shortlog -sn`, so keep it honest.
 
 | Member | GitHub handle | Main contributions |
 |---|---|---|
-|  |  |  |
-|  |  |  |
-|  |  |  |
+| Christiana Constantina | bristiana | Business: idea, use case evaluation and interviewing, tema coordination, pitch |
+| Bogdan Caraeane | Bogdan-ca | System 3: dashboard, user interaction, restricted area management, integration with unity simulation and camera detection system  |
+| Marius Manae | Marius0G | System 5: unity simulation with full rendering of HK City, integration live system 1 camera detection systems inside the simulation, addition of a controllable drone inside the simulation |
+| Filipp Trigub | FilippTrigub | System 1, 2 & 4: drone detection system for the camera, data processing and position triangulation, tracking system; fine-tuning of a YOLOv11 with datasets from Zhejiang university for small object detection 
 
 ---
 
@@ -35,8 +36,7 @@ Features that run end-to-end on the live app, with real data and real logic. Be 
 
 | What is faked | Where (file:line or folder) | Why we mocked it | What the real version would do |
 |---|---|---|---|
-| Synthetic background drones (SIM-001, SIM-002, SIM-003) | `system3-operator-dashboard/src/lib/use-drone-stream.ts` | Ensures the alert engine and zone-violation logic are always demonstrable without a live camera feed connected | Remove when physical cameras or the Unity simulator are streaming — the real detections flow through System 1 → 2 → 4 → 3 automatically |
-| System 3 E2E test uses mock bearing events (no Unity required) | `system1-detection-agent/tests/e2e/run_e2e.py` | Avoids Unity + mediamtx dependency in CI | Run against a live Unity simulator RTSP feed for full integration |
+| For better visualization & additional to the real detection feed: synthetic background drones (SIM-001, SIM-002, SIM-003) | `system3-operator-dashboard/src/lib/use-drone-stream.ts` | Ensures for better visualization the alert engine and zone-violation logic are always demonstrable without a live camera feed connected | Remove when physical cameras or the Unity simulator are streaming — the real detections flow through System 1 → 2 → 4 → 3 automatically |
 
 ---
 
@@ -62,7 +62,6 @@ Anything written **before** kickoff that we brought into this project: prior per
 | Item | Source (URL or description) | Roughly how much | License |
 |---|---|---|---|
 | YOLOv8n baseline weights (`yolov8s.pt`) | Ultralytics YOLOv8 — off-the-shelf pretrained model | Model weights only; all inference wrapper code written during hackathon | AGPL-3.0 |
-| YOLOv11x starting checkpoint (pre-fine-tune) | Public HuggingFace checkpoint pre-trained on drone data | Model weights only; not our training | Varies by checkpoint author |
 | mediamtx binary | [github.com/bluenviron/mediamtx](https://github.com/bluenviron/mediamtx) — open-source RTSP/RTMP server | Binary bundled in System 5 repo; no source modifications | MIT |
 
 All application code across all five systems (System 1–5 repos) was written during the hackathon window. The YOLOv11x fine-tune (training data prep, training run, evaluation, HuggingFace upload) was also performed during the hackathon.
@@ -76,6 +75,4 @@ What we would build next, and the weak spots we already know about. Naming these
 - **Greedy nearest-neighbour tracking**: System 4 uses a simple distance/time association with no motion model. A Kalman filter or similar would handle higher drone speeds, occlusions, and multiple simultaneous drones much more robustly.
 - **Triangulation requires ≥ 2 cameras with overlapping view**: a single camera cannot produce a GPS fix. Scaling to more cameras is config-only (`cameras.yaml`), but the current deployment uses just 2.
 - **No authentication on any endpoint**: all APIs and the dashboard are publicly accessible. Production would require auth on the dashboard and mTLS or API-key enforcement on the System 2 / System 4 APIs.
-- **`system3_reader` password is plaintext in docs**: acceptable for a hackathon; rotate before any public or production exposure.
 - **Fine-tuned model mAP@0.5 = 0.555**: solid for a hackathon fine-tune on 17k images, but a production system would need more diverse training data, higher recall (0.606 today), and adversarial test cases (camouflage, partial occlusion, night conditions).
-- **Hong Kong static no-fly zones are approximations**: zone polygons in the dashboard are manually drawn for demo purposes; real deployment would pull authoritative CAD data from the Civil Aviation Department.
